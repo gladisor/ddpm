@@ -10,7 +10,7 @@ from ddpm.utils import write_image
 
 if __name__ == '__main__':
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-    batch_size = 128
+    batch_size = 4
     timesteps = 300
 
     in_channels = 4
@@ -19,16 +19,15 @@ if __name__ == '__main__':
     data = PokemonImageDataset('data/pokemon', 64)
     dataloader = torch.utils.data.DataLoader(data, batch_size = batch_size, shuffle = True, drop_last = True)
 
-    sampler = DiffusionSampler(timesteps).to(device)
+    sampler = DiffusionSampler(timesteps, start = 0.00001).to(device)
 
     model = UNet(in_channels, time_emb_dim).to(device)
     # model.load_state_dict(torch.load('model.pt'))
     model.train()
-    print(model)
     
     optimizer =  torch.optim.Adam(model.parameters(), lr = 0.001)
 
-    for epoch in range(1000):
+    for epoch in range(10):
         for i, batch in enumerate(dataloader):
             x_0, _ = batch
             x_0 = x_0.to(device)
@@ -50,16 +49,37 @@ if __name__ == '__main__':
     x_0, _ = next(iter(dataloader))
     x_0 = x_0.to(device)
 
-    T = torch.ones(batch_size).long().to(device)  * 1
+    T = torch.ones(batch_size).long().to(device) * 0
 
     x_T, noise = sampler(x_0, T)
 
     x_hat = sampler.reverse_sample(model, x_T, T)
-    # x_hat = sampler.reverse_sample(noise, x_T, T)
 
-    print(T)
-    print((x_0 - x_hat).max())
-    print((x_0 - x_hat).min())
+    # fig, ax = plt.subplots(batch_size, 4, figsize = (10, 10))
+
+    # for i in range(batch_size):
+    #     ax[i, 0].imshow(data.data_to_image(x_0[i, :,  :, :].detach().cpu().permute(1, 2, 0)))
+
+    # for i in range(batch_size):
+    #     ax[i, 1].imshow(data.data_to_image(x_T[i, :,  :, :].detach().cpu().permute(1, 2, 0)))
+
+    # for i in range(batch_size):
+    #     ax[i, 2].imshow(data.data_to_image(noise[i, :,  :, :].detach().cpu().permute(1, 2, 0)))
+
+    # for i in range(batch_size):
+    #     ax[i, 3].imshow(data.data_to_image(x_hat[i, :,  :, :].detach().cpu().permute(1, 2, 0)))
+
+    # fig.savefig('noise.png')
+
+
+
+
+
+
+
+
+
+
 
     fig, ax = plt.subplots(4, 3, figsize = (10, 10))
     ## plot original image

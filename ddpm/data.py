@@ -33,7 +33,7 @@ class PokemonImageDataset(Dataset):
     def __getitem__(self, idx: int):
         name = self.pokemon[idx]
         path = self.root / 'images' / f'{name}.png'
-        img = self.image_to_data(torchvision.io.read_image(path))
+        img = self.image_to_data(torchvision.io.read_image(str(path)))
         return img, name
 
 if __name__ == '__main__':

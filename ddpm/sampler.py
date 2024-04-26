@@ -22,17 +22,6 @@ class DiffusionSampler(nn.Module):
         self.register_buffer('alphas', alphas, persistent=False)
         self.register_buffer('alphas_cumprod',  alphas_cumprod, persistent=False)
         self.register_buffer('alphas_cumprod_prev', alphas_cumprod_prev, persistent=False)
-
-    def sample_single(self, x_0: torch.Tensor, t: int) -> torch.Tensor:
-        """
-        x_0: (C x H x W) a single image
-        t: an integer timestep to step the image to
-        """
-        alpha_bar = self.alphas_cumprod_prev[t]
-        noise = torch.randn_like(x_0)
-
-        noised_image = torch.sqrt(alpha_bar) * x_0 + torch.sqrt(1.0 - alpha_bar) * noise
-        return noised_image, noise
     
     @torch.no_grad()
     def forward(self, x_0: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
@@ -40,7 +29,7 @@ class DiffusionSampler(nn.Module):
         x_0: (B x C x H x W) a batch of images
         t: (B,) timestep for each image in batch
         """
-        alpha_bar = self.alphas_cumprod_prev.gather(0, t)[:, None, None, None]
+        alpha_bar = self.alphas_cumprod.gather(0, t)[:, None, None, None]
         noise = torch.randn_like(x_0)
 
         x_t = alpha_bar.sqrt() * x_0 + (1.0 - alpha_bar).sqrt() * noise
@@ -55,7 +44,7 @@ class DiffusionSampler(nn.Module):
         alpha_bar = self.alphas_cumprod.gather(0, t)[:, None, None, None]
         alpha_bar_prev = self.alphas_cumprod_prev.gather(0, t)[:, None, None, None]
         beta = self.betas.gather(0, t)[:, None, None, None]
-        first_timestep = (t > 1)[:, None, None, None]
+        first_timestep = (t > 0)[:, None, None, None]
 
         z = torch.randn_like(x_t)
         var = beta * (1.0 - alpha_bar_prev) / (1.0 - alpha_bar)
