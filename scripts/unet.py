@@ -1,5 +1,6 @@
 import torch
 from torch import nn
+import torch.nn.functional as F
 import numpy as np
 
 class SinusoidalEmbeddings(nn.Module):
@@ -27,20 +28,27 @@ class DownBlock(nn.Module):
         super().__init__()
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size = 3, padding = 1)
         self.pool = nn.MaxPool2d(kernel_size = 2)
-    
+        # self.pool = nn.Conv2d(out_channels, out_channels, kernel_size=4, stride=2, padding=1)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.pool(self.conv(x))
+        return self.pool(F.relu(self.conv(x)))
+
+class UpBlock(nn.Module):
+    def __init__(self, in_channels: int, out_channels: int):
+        super().__init__()
+        self.upsample = nn.Upsample(scale_factor = 2, mode = 'bilinear', align_corners = True)
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size = 3, padding = 1)
     
+    def forward(self, x: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
+        y = torch.cat([self.conv(self.upsample(x)), z], dim = 1)
+        return y
+
 class DoubleConv(nn.Module):
     def __init__(self, in_channels: int, out_channels: int, cond_dim: int):
         super().__init__()
 
         self.cond_mlp = nn.Sequential(
             nn.Linear(cond_dim, in_channels),
-            nn.ReLU(inplace = True),
-            nn.Linear(in_channels, in_channels),
-            nn.ReLU(inplace = True),
-            nn.Linear(in_channels, in_channels),
             nn.Unflatten(1, (in_channels, 1, 1))
             )
 
@@ -56,21 +64,15 @@ class DoubleConv(nn.Module):
     def forward(self, x, c):
         return self.conv(self.cond_mlp(c) + x)
     
-class UpBlock(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int):
-        super().__init__()
-        self.upsample = nn.Upsample(scale_factor = 2, mode = 'bilinear', align_corners = True)
-        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size = 3, padding = 1)
-    
-    def forward(self, x: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
-        y = torch.cat([self.conv(self.upsample(x)), z], dim = 1)
-        return y
-    
 class UNet(nn.Module):
     def __init__(self, in_channels: int, cond_dim: int):
         super().__init__()
 
-        self.emb = SinusoidalEmbeddings(cond_dim)
+        self.emb = nn.Sequential(
+            SinusoidalEmbeddings(cond_dim),
+            nn.Linear(cond_dim, cond_dim),
+            nn.ReLU(inplace=True)
+        )
 
         self.in_layer = DoubleConv(in_channels, 32, cond_dim)
         self.down1 = DownBlock(32, 32)
@@ -87,10 +89,16 @@ class UNet(nn.Module):
         self.up3 = UpBlock(64, 32)
         self.up3_conv = DoubleConv(64, 32, cond_dim)
         self.out_layer = nn.Sequential(
-            nn.Conv2d(32, 32, kernel_size = 3,  padding = 1),
-            nn.ReLU(inplace = False),
+            # nn.Conv2d(32, 32, kernel_size = 3,  padding = 1),
+            # nn.BatchNorm2d(32),
+            # nn.ReLU(inplace = True),
+            # nn.Conv2d(32, 32, kernel_size = 3,  padding = 1),
+            # nn.BatchNorm2d(32),
+            # nn.ReLU(inplace = True),
+            # nn.Conv2d(32, in_channels, kernel_size = 1)
             nn.Conv2d(32, in_channels, kernel_size = 1)
         )
+        # self.out_layer = DoubleConv(32, in_channels, cond_dim)
 
     def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         t_emb = self.emb(t)
