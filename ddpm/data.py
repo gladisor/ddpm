@@ -9,7 +9,7 @@ import pandas as pd
 from ddpm.utils import build_image_to_data_transform, build_data_to_image_transform
 
 class PokemonImageDataset(Dataset):
-    def __init__(self, root: str,  img_size: int = 128) -> None:
+    def __init__(self, root: str,  img_size: int = 64) -> None:
         super().__init__()
 
         self.root = Path(root)
@@ -26,15 +26,18 @@ class PokemonImageDataset(Dataset):
             transforms.Lambda(lambda x: 255.0 * (x + 1.0) / 2.0),
             transforms.Lambda(lambda x: x.type(torch.ByteTensor))
             ])
+        
+        images = [
+            self.image_to_data(torchvision.io.read_image(str(self.root / 'images' / f'{p}.png'))) for p in self.pokemon
+        ]
+
+        self.images = torch.stack(images)
 
     def __len__(self) -> int:
         return len(self.pokemon)
     
     def __getitem__(self, idx: int):
-        name = self.pokemon[idx]
-        path = self.root / 'images' / f'{name}.png'
-        img = self.image_to_data(torchvision.io.read_image(str(path)))
-        return img, name
+        return self.images[idx, ...], self.pokemon[idx]
 
 if __name__ == '__main__':
     data = PokemonImageDataset('data/pokemon')

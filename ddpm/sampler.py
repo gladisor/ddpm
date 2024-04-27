@@ -60,7 +60,7 @@ class DiffusionSampler(nn.Module):
     #     alpha_bar = self.alphas_cumprod.gather(0, t)[:, None, None, None]
     #     alpha_bar_prev = self.alphas_cumprod_prev.gather(0, t)[:, None, None, None]
     #     beta = self.betas.gather(0, t)[:, None, None, None]
-    #     first_timestep = (t > 1)[:, None, None, None]
+    #     first_timestep = (t > 0)[:, None, None, None]
 
     #     z = torch.randn_like(x_t)
     #     var = beta * (1.0 - alpha_bar_prev) / (1.0 - alpha_bar)
