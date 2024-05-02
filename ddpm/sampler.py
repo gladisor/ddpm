@@ -1,91 +1,140 @@
-from typing import Callable
 import torch
+from torch import Tensor
 from torch import nn
 import torch.nn.functional as F
-## https://github.com/lucidrains/denoising-diffusion-pytorch/blob/main/denoising_diffusion_pytorch/denoising_diffusion_pytorch.py
+import tqdm
+import matplotlib.pyplot as plt
 
-def extract(v: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+from ddpm.utils import extract, viewable
+
+def linear_beta_schedule(timesteps: int) -> Tensor:
     '''
-    v: vector of values
-    t: integer indexes
-    '''
-    return v.gather(0, t)[:, None, None, None]
-
-# def linear_beta_schedule(timesteps: int, start: float, end: float):
-#     return torch.linspace(start, end, timesteps)
-
-def linear_beta_schedule(timesteps):
-    """
     linear schedule, proposed in original ddpm paper
-    """
+    '''
     scale = 1000 / timesteps
     beta_start = scale * 0.0001
     beta_end = scale * 0.02
     return torch.linspace(beta_start, beta_end, timesteps)
 
 class DiffusionSampler(nn.Module):
-    '''
-    This is a tool for stepping images to a particular point in time in the forward diffusion process.
-    It takes in a noise schecule and number of timesteps.
-    '''
-    # def __init__(self, timesteps: int, schedule: Callable = linear_beta_schedule, start: float = 0.0001, end: float = 0.02):
-    def __init__(self, timesteps: int, schedule: Callable = linear_beta_schedule):
+    def __init__(self, timesteps: int):
         super().__init__()
-        betas = schedule(timesteps)
-        alphas = 1.0 - betas
-        alphas_cumprod = torch.cumprod(alphas, dim = 0)
-        alphas_cumprod_prev = F.pad(alphas_cumprod[:-1], (1, 0), value = 1.0) ## ensure that the first alpha cumprod is 1.0, remove the last
 
-        self.register_buffer('betas', betas, persistent=False)
-        self.register_buffer('alphas', alphas, persistent=False)
-        self.register_buffer('alphas_cumprod',  alphas_cumprod, persistent=False)
-        self.register_buffer('alphas_cumprod_prev', alphas_cumprod_prev, persistent=False)
+        ## computing scheduling parameters
+        beta = linear_beta_schedule(timesteps)
+        alpha = 1.0 - beta
+        alpha_bar = alpha.cumprod(dim = 0)
+        alpha_bar_prev = F.pad(alpha_bar[:-1], (1, 0), value = 1.)
+
+        ## adding as non trainable parameters
+        self.register_buffer('beta', beta)
+        self.register_buffer('alpha', alpha)
+        self.register_buffer('alpha_bar', alpha_bar)
+        self.register_buffer('alpha_bar_prev', alpha_bar_prev)
+
+    @property
+    def device(self):
+        return self.beta.device
+    
+    @property
+    def timesteps(self):
+        return len(self.beta)
     
     @torch.no_grad()
-    def forward(self, x_0: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-        """
-        x_0: (B x C x H x W) a batch of images
-        t: (B,) timestep for each image in batch
-        """
-        alpha_bar = self.alphas_cumprod.gather(0, t)[:, None, None, None]
-        noise = torch.randn_like(x_0)
-
-        x_t = alpha_bar.sqrt() * x_0 + (1.0 - alpha_bar).sqrt() * noise
-        return x_t, noise
+    def step(self, x0: Tensor, t: Tensor):
+        noise = torch.randn_like(x0)
+        alpha_bar = extract(self.alpha_bar, t)
+        xt = alpha_bar.sqrt() * x0 + (1. - alpha_bar).sqrt() * noise
+        return xt, noise
     
     @torch.no_grad()
-    def reverse_sample(self, model: nn.Module, x_t: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+    def reverse_step(self, model: nn.Module, xt: Tensor, t: Tensor) -> Tensor:
 
-        epsilon = model(x_t, t)
-        
-        alpha = self.alphas.gather(0, t)[:, None, None, None]
-        alpha_bar = self.alphas_cumprod.gather(0, t)[:, None, None, None]
-        alpha_bar_prev = self.alphas_cumprod_prev.gather(0, t)[:, None, None, None]
-        beta = self.betas.gather(0, t)[:, None, None, None]
-        first_timestep = (t > 0)[:, None, None, None]
+        beta            = extract(self.beta, t)
+        alpha           = extract(self.alpha, t)
+        alpha_bar       = extract(self.alpha_bar, t)
+        alpha_bar_prev  = extract(self.alpha_bar_prev, t)
+        not_first_timestep = (t > 1)[:, None, None, None]
 
-        z = torch.randn_like(x_t)
-        # var = beta * (1.0 - alpha_bar_prev) / (1.0 - alpha_bar)
-        var = beta
-        
-        mu = (1.0 / alpha.sqrt()) * (x_t - epsilon * beta / (1.0 - alpha_bar).sqrt())
-        return (mu + first_timestep * var.sqrt() * z)
+        epsilon = model(xt, t)
+        z = torch.randn_like(xt)
+        var = beta * (1. - alpha_bar_prev) / (1. - alpha_bar)
+        mu = (1.0 / alpha.sqrt()) * (xt - epsilon * beta / (1.0 - alpha_bar).sqrt())
+        return (mu + not_first_timestep * var.sqrt() * z)
     
-    # @torch.no_grad()
-    # def reverse_sample(self, epsilon, x_t: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+    @torch.no_grad()
+    def denoise(self, model: nn.Module, xT: Tensor, num_images: int = 1) -> Tensor:
 
-    #     # epsilon = model(x_t, t)
-    #     alpha = self.alphas.gather(0, t)[:, None, None, None]
-    #     alpha_bar = self.alphas_cumprod.gather(0, t)[:, None, None, None]
-    #     alpha_bar_prev = self.alphas_cumprod_prev.gather(0, t)[:, None, None, None]
-    #     beta = self.betas.gather(0, t)[:, None, None, None]
-    #     first_timestep = (t > 0)[:, None, None, None]
+        xt = xT.clone()
 
-    #     z = torch.randn_like(x_t)
-    #     var = beta * (1.0 - alpha_bar_prev) / (1.0 - alpha_bar)
+        if num_images > 1:
+            dt = int(self.timesteps / num_images)
+            sequence = []
+
+        for i in tqdm.tqdm(reversed(range(self.timesteps))):
+            t = torch.ones(xT.shape[0]).long().to(self.device) * i
+            xt = self.reverse_step(model, xt, t)
+
+            if num_images > 1 and (i % dt == 0 or i == self.timesteps - 1):
+                sequence.append(xt)
+
+        if num_images > 1:
+            return sequence
+        else:
+            return xt
+
+    @torch.no_grad()
+    def plot_forward(self, x0: Tensor, num_images: int, path: str):
+        batch_size = x0.shape[0]
+        timesteps = len(self.beta)
+
+        scale = 2
+        fig, ax = plt.subplots(batch_size, num_images + 1, figsize = (scale*num_images, scale*batch_size))
+        ax[0, 0].set_title('Original')
+        for j in range(batch_size):
+            ax[j, 0].imshow(viewable(x0[j, ...]))
+
+        for i in range(1, num_images):
+            T = i * int(timesteps / num_images)
+            t = torch.ones(batch_size).long().to(self.device) * T
+            xt, _ = self.step(x0, t)
+            ax[0, i].set_title(str(T))
+            for j in range(batch_size):
+                ax[j, i].imshow(viewable(xt[j, ...]))
+
+        for j in range(batch_size):
+            T = timesteps - 1
+            t = torch.ones(batch_size).long().to(self.device) * T
+            xt, _ = self.step(x0, t)
+
+            ax[0, -1].set_title(str(T))
+            for j in range(batch_size):
+                ax[j, -1].imshow(viewable(xt[j, ...]))
+
+        for i in range(ax.shape[0]):
+            for j in range(ax.shape[1]):
+                ax[i, j].axis('off')
         
-    #     mu = (1.0 / alpha.sqrt()) * (x_t - epsilon * beta / (1.0 - alpha_bar).sqrt())
-    #     return mu + first_timestep * var.sqrt() * z
+        fig.tight_layout()
+        fig.savefig(path)
+        plt.close(fig)
+        return None
     
-if __name__ == '__main__':
-    sampler =  DiffusionSampler(1000)
+    @torch.no_grad()
+    def plot_reverse(self, model: nn.Module, xT: Tensor, num_images: int, path: str):
+        batch_size = xT.shape[0]
+
+        sequence = self.denoise(model, xT, num_images)
+
+        scale = 2
+        fig, ax = plt.subplots(batch_size, num_images + 1, figsize = (scale*num_images, scale*batch_size))
+
+        for i in range(len(sequence)):
+            for j in range(batch_size):
+                ax[j, i].imshow(viewable(sequence[i][j, ...]))
+                ax[j, i].axis('off')
+        
+        fig.tight_layout()
+        fig.savefig(path)
+        plt.close(fig)
+        return
