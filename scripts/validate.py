@@ -308,6 +308,8 @@ if __name__ == '__main__':
 
     model = UNet()
     model(x0, t)
+
+    print(model)
     # from unet_youtube import Unet
     # model = Unet(dim = 32).to(device)
     # print(model.downs)
