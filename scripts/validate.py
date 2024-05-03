@@ -103,7 +103,7 @@ class Attention(nn.Module):
         ## compute the queries, keys, and values of the incoming feature maps
         q, k, v = torch.chunk(self.qkv(x), 3, dim = 1)
         ## takes the channel dimention and reshapes into heads, channels
-        ## also flattens the featuremaps into vectors
+        ## also flattens the feature maps into vectors
         ## the shape is now b h c d where d is dim_head
         q = rearrange(q, 'b (h c) x y -> b h c (x y)', h = self.heads)
         k = rearrange(k, 'b (h c) x y -> b h c (x y)', h = self.heads)
@@ -111,7 +111,7 @@ class Attention(nn.Module):
         q = q * self.scale
 
         ## multiplication of the query and key matrixes for each head
-        ## this is a pixelwise comparison since we flattened the featuremaps
+        ## this is a pixelwise comparison since we flattened the feature maps
         sim = einsum('b h c i, b h c j -> b h i j', q, k)
         ## subtract the maximum value of each row
         sim = sim - sim.amax(dim = -1, keepdim = True).detach()
@@ -123,7 +123,6 @@ class Attention(nn.Module):
         y = rearrange(y, 'b h (x y) d -> b (h d) x y', x = h, y = w)
         ## return the feature maps but compress the channel dimention back to the original size
         return self.output(y)
-
 
 if __name__ == '__main__':
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
@@ -159,6 +158,21 @@ if __name__ == '__main__':
     time_emb = emb(t)
     y = down3(down2(down1(layer(x0, time_emb))))
     z = attention(y)
+
+    print(z.shape)
+
+
+
+
+
+
+
+
+
+
+
+
+    
 
     # model = Unet(dim = 32).to(device)
     # model.train()
