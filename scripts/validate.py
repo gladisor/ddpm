@@ -251,7 +251,7 @@ class UNet(nn.Module):
         b, c, h, w = x.shape
 
 
-        time_emb = self.time_mlp(t)
+        time_emb = self.time_mlp(t) ## (b x time_emb_dim)
         y = self.input_layer(x) ## (b x 32 x 128 x 128)
         r = y.clone()
 
@@ -264,10 +264,10 @@ class UNet(nn.Module):
             residuals.append(y)
             y = downsample(y)
 
-        y = self.mid_block1(y, time_emb)
-        y = self.mid_attention(y)
-        y = self.mid_block2(y, time_emb)
         ## (b x 256 x 16 x 16)
+        y = self.mid_block1(y, time_emb)
+        y = self.mid_attention(y) ## compute pixelwise attention
+        y = self.mid_block2(y, time_emb)
 
         for res1, res2, attention, upsample in self.ups:
             y = res1(torch.cat((y, residuals.pop()), dim = 1), time_emb)
@@ -275,9 +275,11 @@ class UNet(nn.Module):
             y = attention(y)
             y = upsample(y)
 
+        ## final skip connection to residual layer
         y = self.output_res(torch.cat((y, r), dim = 1), time_emb)
         y = self.output_layer(y)
 
+        print(residuals)
         return y
 
 if __name__ == '__main__':
@@ -307,9 +309,8 @@ if __name__ == '__main__':
     t = torch.randint(0, timesteps, (x0.shape[0],)).long().to(device)
 
     model = UNet()
-    model(x0, t)
+    y = model(x0, t)
 
-    print(model)
     # from unet_youtube import Unet
     # model = Unet(dim = 32).to(device)
     # print(model.downs)
