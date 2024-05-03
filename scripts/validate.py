@@ -67,9 +67,7 @@ class ResBlock(nn.Module):
     def __init__(self, in_channels: int, out_channels: int, time_emb_dim: int, groups: int = 8):
         super().__init__()
 
-        self.time_mlp = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(time_emb_dim, out_channels * 2))
+        self.time_mlp = nn.Sequential(nn.SiLU(), nn.Linear(time_emb_dim, out_channels * 2))
         
         self.block1 = Block(in_channels, out_channels)
         self.block2 = Block(out_channels, out_channels)
@@ -83,6 +81,15 @@ class ResBlock(nn.Module):
         h = self.block1(x, scale, shift)
         return self.block2(h) + self.skip(x)
 
+class PreNorm(nn.Module):
+    def __init__(self, layer: nn.Module, in_channels: int):
+        super().__init__()
+        self.norm = nn.GroupNorm(1, in_channels)
+        self.layer = layer
+
+    def forward(self, x: Tensor) -> Tensor:
+        return self.layer(self.norm(x))
+    
 ## https://huggingface.co/blog/annotated-diffusion
 class Attention(nn.Module):
     '''
@@ -155,6 +162,14 @@ class LinearAttention(nn.Module):
         out = torch.einsum('b h d e, b h d n -> b h e n', context, q)
         out = rearrange(out, 'b h c (x y) -> b (h c) x y', x = h, y = w)
         return self.output(out)
+    
+class UNet(nn.Module()):
+    def __init__(self):
+        super().__init__()
+
+        self.time_mlp = nn.Sequential(
+            SinusoidalEmbeddings(160)
+        )
 
 if __name__ == '__main__':
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
@@ -180,41 +195,34 @@ if __name__ == '__main__':
     x0 = x0.to(device)
 
     # sampler.plot_forward(x0, 10, path = 'forward.png')
-
     t = torch.randint(0, timesteps, (x0.shape[0],)).long().to(device)
+    # time_emb_dim = 160
+    # emb = SinusoidalEmbeddings(time_emb_dim).to(device)
+    # layer = ResBlock(3, 16, time_emb_dim).to(device)
+    # down1 = DownBlock(16, 32).to(device)
+    # down2 = DownBlock(32, 64).to(device)
+    # down3 = DownBlock(64, 128).to(device)
 
-    time_emb_dim = 160
-    emb = SinusoidalEmbeddings(time_emb_dim).to(device)
-    layer = ResBlock(3, 16, time_emb_dim).to(device)
-    down1 = DownBlock(16, 32).to(device)
-    down2 = DownBlock(32, 64).to(device)
-    down3 = DownBlock(64, 128).to(device)
+    # attention = Attention(32, 2).to(device)
+    # linear_attention = LinearAttention(32, 2).to(device)
 
-    attention = Attention(32, 2).to(device)
-    linear_attention = LinearAttention(32, 2).to(device)
+    # time_emb = emb(t)
+    # y = down1(layer(x0, time_emb))
 
-    time_emb = emb(t)
-    y = down1(layer(x0, time_emb))
+    model = UNet()
 
-    import time
+    model.time_mlp(t)
 
-    start = time.time()
-    out = linear_attention(y)
-    end = time.time()
-    print(out.shape)
-    print(end - start)
-
-    start = time.time()
-    out = attention(y)
-    end = time.time()
-    print(out.shape)
-    print(end - start)
+    print(x0.shape)
+    print(t.shape)
 
 
 
 
 
-    
+
+
+
 
     # model = Unet(dim = 32).to(device)
     # model.train()
