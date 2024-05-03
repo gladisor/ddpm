@@ -123,11 +123,45 @@ class Attention(nn.Module):
         y = rearrange(y, 'b h (x y) d -> b (h d) x y', x = h, y = w)
         ## return the feature maps but compress the channel dimention back to the original size
         return self.output(y)
+    
+## https://huggingface.co/blog/annotated-diffusion
+class LinearAttention(nn.Module):
+    def __init__(self, in_channels: int, heads: int = 4, dim_head: int = 32):
+        super().__init__()
+        self.heads = heads
+        self.scale = dim_head ** -0.5
+        hidden_dim = heads * dim_head
+        self.qkv = nn.Conv2d(in_channels, 3*hidden_dim, kernel_size = 1, bias = False)
+        self.output = nn.Conv2d(hidden_dim, in_channels, kernel_size = 1)
+
+    def forward(self, x: Tensor) -> Tensor:
+        b, c, h, w = x.shape
+        qkv = self.qkv(x)
+        q, k, v = qkv.chunk(3, dim = 1)
+
+        ## takes the channel dimention and reshapes into heads, channels
+        ## also flattens the feature maps into vectors
+        ## the shape is now b h c d where d is dim_head
+        q = rearrange(q, 'b (h c) x y -> b h c (x y)', h = self.heads)
+        k = rearrange(k, 'b (h c) x y -> b h c (x y)', h = self.heads)
+        v = rearrange(v, 'b (h c) x y -> b h c (x y)', h = self.heads)
+        ## softmax along dim_head dim
+        q = q.softmax(dim = 2) * self.scale
+        ## softmax along flattened image dim
+        k = k.softmax(dim = 3)
+        ## compute comparison betweeen keys and values to produce context.
+        ## essentially this is a comparison between each flattened image in the dim_head
+        context = torch.einsum('b h d n, b h e n -> b h d e', k, v)
+        out = torch.einsum('b h d e, b h d n -> b h e n', context, q)
+        out = rearrange(out, 'b h c (x y) -> b (h c) x y', x = h, y = w)
+        return self.output(out)
 
 if __name__ == '__main__':
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-    train_data = ImageFolder('data/birds/train', build_image_transform())
-    test_data = ImageFolder('data/birds/test', build_image_transform())
+    train_data = ImageFolder('data/pokemon', build_image_transform())
+    test_data = ImageFolder('data/pokemon', build_image_transform())
+    # train_data = ImageFolder('data/birds/train', build_image_transform())
+    # test_data = ImageFolder('data/birds/test', build_image_transform())
     print(f'Train length = {len(train_data)}, Val length = {len(test_data)}')
     
     ## system hyperparameters
@@ -145,6 +179,8 @@ if __name__ == '__main__':
     x0, c = next(iter(testloader))
     x0 = x0.to(device)
 
+    # sampler.plot_forward(x0, 10, path = 'forward.png')
+
     t = torch.randint(0, timesteps, (x0.shape[0],)).long().to(device)
 
     time_emb_dim = 160
@@ -153,20 +189,26 @@ if __name__ == '__main__':
     down1 = DownBlock(16, 32).to(device)
     down2 = DownBlock(32, 64).to(device)
     down3 = DownBlock(64, 128).to(device)
-    attention = Attention(128).to(device)
+
+    attention = Attention(32, 2).to(device)
+    linear_attention = LinearAttention(32, 2).to(device)
 
     time_emb = emb(t)
-    y = down3(down2(down1(layer(x0, time_emb))))
-    z = attention(y)
+    y = down1(layer(x0, time_emb))
 
-    print(z.shape)
+    import time
 
+    start = time.time()
+    out = linear_attention(y)
+    end = time.time()
+    print(out.shape)
+    print(end - start)
 
-
-
-
-
-
+    start = time.time()
+    out = attention(y)
+    end = time.time()
+    print(out.shape)
+    print(end - start)
 
 
 
