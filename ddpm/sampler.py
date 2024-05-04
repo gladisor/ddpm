@@ -50,10 +50,10 @@ class DiffusionSampler(nn.Module):
     @torch.no_grad()
     def reverse_step(self, model: nn.Module, xt: Tensor, t: Tensor) -> Tensor:
 
-        beta            = extract(self.beta, t)
-        alpha           = extract(self.alpha, t)
-        alpha_bar       = extract(self.alpha_bar, t)
-        alpha_bar_prev  = extract(self.alpha_bar_prev, t)
+        beta               = extract(self.beta, t)
+        alpha              = extract(self.alpha, t)
+        alpha_bar          = extract(self.alpha_bar, t)
+        alpha_bar_prev     = extract(self.alpha_bar_prev, t)
         not_first_timestep = (t > 1)[:, None, None, None]
 
         epsilon = model(xt, t)
