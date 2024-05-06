@@ -1,3 +1,5 @@
+import math
+
 import torch
 from torch import Tensor
 from torch import nn
@@ -16,12 +18,30 @@ def linear_beta_schedule(timesteps: int) -> Tensor:
     beta_end = scale * 0.02
     return torch.linspace(beta_start, beta_end, timesteps)
 
+def cosine_beta_schedule(timesteps, s = 0.008):
+    '''
+    https://github.com/lucidrains/denoising-diffusion-pytorch/blob/main/denoising_diffusion_pytorch/classifier_free_guidance.py
+    cosine schedule
+    as proposed in https://openreview.net/forum?id=-NEXDKk8gZ
+    '''
+    steps = timesteps + 1
+    x = torch.linspace(0, timesteps, steps)
+    alphas_cumprod = torch.cos(((x / timesteps) + s) / (1 + s) * math.pi * 0.5) ** 2
+    alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
+    betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
+    return torch.clip(betas, 0, 0.999)
+
 class DiffusionSampler(nn.Module):
-    def __init__(self, timesteps: int):
+    def __init__(self, timesteps: int, beta_schedule: str):
         super().__init__()
 
         ## computing scheduling parameters
-        beta = linear_beta_schedule(timesteps)
+        if beta_schedule == 'linear':
+            beta = linear_beta_schedule(timesteps)
+        elif beta_schedule == 'cosine':
+            beta = cosine_beta_schedule(timesteps)
+        else:
+            raise ValueError('Unrecognized beta_schedule.')
         alpha = 1.0 - beta
         alpha_bar = alpha.cumprod(dim = 0)
         alpha_bar_prev = F.pad(alpha_bar[:-1], (1, 0), value = 1.)
@@ -72,7 +92,8 @@ class DiffusionSampler(nn.Module):
             sequence = []
 
         for i in tqdm.tqdm(reversed(range(self.timesteps))):
-            t = torch.ones(xT.shape[0]).long().to(self.device) * i
+            # t = torch.ones(xT.shape[0]).long().to(self.device) * i
+            t = torch.ones(xT.shape[0], device = xT.device).long() * i
             xt = self.reverse_step(model, xt, t)
 
             if num_images > 1 and (i % dt == 0 or i == self.timesteps - 1):
@@ -96,7 +117,8 @@ class DiffusionSampler(nn.Module):
 
         for i in range(1, num_images):
             T = i * int(timesteps / num_images)
-            t = torch.ones(batch_size).long().to(self.device) * T
+            t = torch.ones(batch_size, device = x0.device).long() * T
+            # t = torch.ones(batch_size).long() * T
             xt, _ = self.step(x0, t)
             ax[0, i].set_title(str(T))
             for j in range(batch_size):
@@ -104,7 +126,8 @@ class DiffusionSampler(nn.Module):
 
         for j in range(batch_size):
             T = timesteps - 1
-            t = torch.ones(batch_size).long().to(self.device) * T
+            t = torch.ones(batch_size, device = x0.device).long() * T
+            # t = torch.ones(batch_size).long() * T
             xt, _ = self.step(x0, t)
 
             ax[0, -1].set_title(str(T))

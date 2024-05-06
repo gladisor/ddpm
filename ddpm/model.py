@@ -7,6 +7,7 @@ import math
 
 import torch
 from torch import nn, Tensor, einsum
+import torch.nn.functional as F
 from einops import rearrange
 from einops.layers.torch import Rearrange
 
@@ -51,7 +52,7 @@ class Block(nn.Module):
         super().__init__()
 
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size = 3, padding = 1)
-        self.norm = nn.GroupNorm(4, out_channels)
+        self.norm = nn.GroupNorm(8, out_channels)
         self.act = nn.SiLU()
 
     def forward(self, x: Tensor, scale: Tensor = None, shift: Tensor = None) -> Tensor:
@@ -77,35 +78,36 @@ class ResBlock(nn.Module):
         h = self.block1(x, scale, shift)
         return self.block2(h) + self.skip(x)
     
-class PreNorm(nn.Module):
-    '''
-    Normalizes the channels of an image and then applies the layer.
-    Performs a skip connection.
-    '''
-    def __init__(self, layer: nn.Module, in_channels: int):
+class RMSNorm(nn.Module):
+    def __init__(self, in_channels: int):
         super().__init__()
-        self.norm = nn.GroupNorm(1, in_channels)
-        self.layer = layer
+        self.g = nn.Parameter(torch.ones(1, in_channels, 1, 1))
 
     def forward(self, x: Tensor) -> Tensor:
-        return self.layer(self.norm(x)) + x
+        return F.normalize(x, dim = 1) * self.g * (x.shape[1] ** 0.5)
     
 ## https://huggingface.co/blog/annotated-diffusion
 class Attention(nn.Module):
     '''
     Computes full pixelwise attention.
     '''
-    def __init__(self, in_channels: int, heads: int = 2, dim_head: int = 32):
+    def __init__(self, in_channels: int, heads: int, dim_head: int):
         super().__init__()
         self.heads = heads
         self.scale = dim_head ** -0.5
-        
         hidden_dim = heads * dim_head
+
+        self.norm = RMSNorm(in_channels)
         self.qkv = nn.Conv2d(in_channels, hidden_dim * 3, kernel_size = 1, bias = False)
-        self.output = nn.Conv2d(hidden_dim, in_channels, kernel_size = 1)
+        self.output = nn.Sequential(
+            nn.Conv2d(hidden_dim, in_channels, kernel_size = 1),
+            RMSNorm(in_channels)
+        )
 
     def forward(self, x: Tensor) -> Tensor:
         b, c, h, w = x.shape
+
+        x = self.norm(x)
 
         ## compute the queries, keys, and values of the incoming feature maps
         q, k, v = torch.chunk(self.qkv(x), 3, dim = 1)
@@ -133,16 +135,26 @@ class Attention(nn.Module):
     
 ## https://huggingface.co/blog/annotated-diffusion
 class LinearAttention(nn.Module):
-    def __init__(self, in_channels: int, heads: int = 2, dim_head: int = 32):
+    '''
+    Computes global attention via a weird hack.
+    '''
+    def __init__(self, in_channels: int, heads: int, dim_head: int):
         super().__init__()
         self.heads = heads
         self.scale = dim_head ** -0.5
         hidden_dim = heads * dim_head
+
+        self.norm = RMSNorm(in_channels)
         self.qkv = nn.Conv2d(in_channels, 3*hidden_dim, kernel_size = 1, bias = False)
-        self.output = nn.Conv2d(hidden_dim, in_channels, kernel_size = 1)
+        self.output = nn.Sequential(
+            nn.Conv2d(hidden_dim, in_channels, kernel_size = 1),
+            RMSNorm(in_channels)
+        )
 
     def forward(self, x: Tensor) -> Tensor:
         b, c, h, w = x.shape
+
+        x = self.norm(x)
         qkv = self.qkv(x)
         q, k, v = qkv.chunk(3, dim = 1)
 
@@ -164,7 +176,11 @@ class LinearAttention(nn.Module):
         return self.output(out)
     
 class UNet(nn.Module):
-    def __init__(self, in_channels: int = 3, time_emb_dim: int = 160):
+    def __init__(self, 
+        in_channels: int = 3, 
+        time_emb_dim: int = 128, 
+        heads: int = 4,
+        dim_head: int = 32):
         super().__init__()
 
         self.time_mlp = nn.Sequential(
@@ -180,71 +196,72 @@ class UNet(nn.Module):
             nn.ModuleList([
                 ResBlock(32, 32, time_emb_dim),
                 ResBlock(32, 32, time_emb_dim),
-                PreNorm(LinearAttention(32), 32),
+                LinearAttention(32, heads, dim_head),
                 DownBlock(32, 32)
             ]),
 
             nn.ModuleList([
                 ResBlock(32, 32, time_emb_dim),
                 ResBlock(32, 32, time_emb_dim),
-                PreNorm(LinearAttention(32), 32),
+                LinearAttention(32, heads, dim_head),
                 DownBlock(32, 64)
             ]),
 
             nn.ModuleList([
                 ResBlock(64, 64, time_emb_dim),
                 ResBlock(64, 64, time_emb_dim),
-                PreNorm(LinearAttention(64), 64),
+                LinearAttention(64, heads, dim_head),
                 DownBlock(64, 128)
             ]),
 
             nn.ModuleList([
                 ResBlock(128, 128, time_emb_dim),
                 ResBlock(128, 128, time_emb_dim),
-                PreNorm(LinearAttention(128), 128),
+                LinearAttention(128, heads, dim_head),
                 nn.Conv2d(128, 256, kernel_size = 3, padding = 1)
             ])
         ])
 
         ## bottleneck section of the UNet
         self.mid_block1 = ResBlock(256, 256, time_emb_dim)
-        self.mid_attention = Attention(256) ## pixelwise attention
+        self.mid_attention = Attention(256, heads, dim_head) ## pixelwise attention
         self.mid_block2 = ResBlock(256, 256, time_emb_dim)
 
         self.ups = nn.ModuleList([
             nn.ModuleList([
                 ResBlock(256 + 128, 256, time_emb_dim),
                 ResBlock(256 + 128, 256, time_emb_dim),
-                PreNorm(LinearAttention(256), 256),
+                LinearAttention(256, heads, dim_head),
                 UpBlock(256, 128)
             ]),
 
             nn.ModuleList([
                 ResBlock(128 + 64, 128, time_emb_dim),
                 ResBlock(128 + 64, 128, time_emb_dim),
-                PreNorm(LinearAttention(128), 128),
+                LinearAttention(128, heads, dim_head),
                 UpBlock(128, 64)
             ]),
 
             nn.ModuleList([
                 ResBlock(64 + 32, 64, time_emb_dim),
                 ResBlock(64 + 32, 64, time_emb_dim),
-                PreNorm(LinearAttention(64), 64),
+                LinearAttention(64, heads, dim_head),
                 UpBlock(64, 32)
             ]),
 
             nn.ModuleList([
                 ResBlock(32 + 32, 32, time_emb_dim),
                 ResBlock(32 + 32, 32, time_emb_dim),
-                PreNorm(LinearAttention(32), 32),
+                LinearAttention(32, heads, dim_head),
                 nn.Conv2d(32, 32, kernel_size = 3, padding = 1)
             ])
         ])
         
-        self.output_res = ResBlock(64, 32, time_emb_dim)
+        self.output_res = ResBlock(32 + 32, 32, time_emb_dim)
         self.output_layer = nn.Conv2d(32, in_channels, kernel_size = 1)
 
     def forward(self, x: Tensor, t: Tensor) -> Tensor:
+        ## (b x 3 x 128 x 128)
         b, c, h, w = x.shape
 
         time_emb = self.time_mlp(t) ## (b x time_emb_dim)
@@ -255,20 +272,22 @@ class UNet(nn.Module):
         for res1, res2, attention, downsample in self.downs:
             y = res1(y, time_emb)
             residuals.append(y)
+            
             y = res2(y, time_emb)
-            y = attention(y)
+            y = attention(y) + y
             residuals.append(y)
+
             y = downsample(y)
 
         ## (b x 256 x 16 x 16)
         y = self.mid_block1(y, time_emb)
-        y = self.mid_attention(y) ## compute pixelwise attention
+        y = self.mid_attention(y) + y ## compute pixelwise attention
         y = self.mid_block2(y, time_emb)
 
         for res1, res2, attention, upsample in self.ups:
             y = res1(torch.cat((y, residuals.pop()), dim = 1), time_emb)
             y = res2(torch.cat((y, residuals.pop()), dim = 1), time_emb)
-            y = attention(y)
+            y = attention(y) + y
             y = upsample(y)
 
         ## final skip connection to residual layer
